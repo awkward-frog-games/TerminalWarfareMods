@@ -1,0 +1,20 @@
+{
+  "id": "ys",
+  "description": "Ported from oh-my-zsh themes/ys.zsh-theme (single-line Powerline)",
+  "segments": [
+    {
+      "text": "{user}@{host}",
+      "fg": "white",
+      "bg": "blue"
+    },
+    {
+      "text": "{path}",
+      "fg": "black",
+      "bg": "cyan"
+    },
+    {
+      "type": "powerline_end"
+    }
+  ],
+  "suffix": "{prompt_char} "
+}

@@ -1,0 +1,19 @@
+{
+  "id": "bureau",
+  "description": "Ported from oh-my-zsh themes/bureau.zsh-theme (minimal)",
+  "segments": [
+    {
+      "text": "{user}@{host}",
+      "fg": "green"
+    },
+    {
+      "text": ":{path}",
+      "fg": "cyan"
+    },
+    {
+      "text": "{prompt_char}",
+      "fg": "yellow"
+    }
+  ],
+  "suffix": " "
+}

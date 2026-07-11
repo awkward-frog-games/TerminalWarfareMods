@@ -1,0 +1,9 @@
+{
+  "type": "colorscript",
+  "id": "pokemon-colorscripts",
+  "name": "Pokemon Colorscripts",
+  "version": "1.0.0",
+  "author": "Phoney badger (upstream); packaged for Terminal Warfare",
+  "manifest": "pokemon.json",
+  "sprite_dir": "small/regular"
+}

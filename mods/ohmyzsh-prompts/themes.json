@@ -1,0 +1,8 @@
+[
+  {"name": "robbyrussell", "file": "themes/robbyrussell.json"},
+  {"name": "agnoster", "file": "themes/agnoster.json"},
+  {"name": "ys", "file": "themes/ys.json"},
+  {"name": "af-magic", "file": "themes/af-magic.json"},
+  {"name": "bureau", "file": "themes/bureau.json"},
+  {"name": "eastwood", "file": "themes/eastwood.json"}
+]

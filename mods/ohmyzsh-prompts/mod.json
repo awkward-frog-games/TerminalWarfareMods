@@ -1,0 +1,9 @@
+{
+  "type": "prompt_theme",
+  "id": "ohmyzsh-prompts",
+  "name": "Oh My Zsh Prompt Themes",
+  "version": "1.0.0",
+  "author": "Terminal Warfare (ported from oh-my-zsh)",
+  "manifest": "themes.json",
+  "theme_dir": "themes"
+}

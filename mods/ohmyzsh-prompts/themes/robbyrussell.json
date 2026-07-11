@@ -1,0 +1,32 @@
+{
+  "id": "robbyrussell",
+  "description": "Ported from oh-my-zsh themes/robbyrussell.zsh-theme",
+  "segments": [
+    {
+      "when": "last_exit_ok",
+      "text": "➜ ",
+      "fg": "green",
+      "bold": true
+    },
+    {
+      "when": "last_exit_fail",
+      "text": "➜ ",
+      "fg": "red",
+      "bold": true
+    },
+    {
+      "text": "{path_tail}",
+      "fg": "cyan"
+    },
+    {
+      "type": "git",
+      "when": "git_repo",
+      "prefix": "git:(",
+      "branch_fg": "red",
+      "suffix_fg": "blue",
+      "dirty_text": " ✗",
+      "dirty_fg": "yellow"
+    }
+  ],
+  "suffix": " "
+}

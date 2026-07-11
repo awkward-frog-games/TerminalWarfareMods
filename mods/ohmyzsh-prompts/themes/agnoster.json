@@ -1,0 +1,26 @@
+{
+  "id": "agnoster",
+  "description": "Ported from oh-my-zsh themes/agnoster.zsh-theme (Powerline)",
+  "segments": [
+    {
+      "text": "{user}@{host}",
+      "fg": "white",
+      "bg": "brblack"
+    },
+    {
+      "text": "{path}",
+      "fg": "black",
+      "bg": "blue"
+    },
+    {
+      "type": "git",
+      "when": "git_repo",
+      "bg": "green",
+      "fg": "black"
+    },
+    {
+      "type": "powerline_end"
+    }
+  ],
+  "suffix": " "
+}

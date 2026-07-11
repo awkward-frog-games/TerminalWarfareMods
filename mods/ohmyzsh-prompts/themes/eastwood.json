@@ -1,0 +1,16 @@
+{
+  "id": "eastwood",
+  "description": "Ported from oh-my-zsh themes/eastwood.zsh-theme",
+  "segments": [
+    {
+      "text": "{path}",
+      "fg": "cyan"
+    },
+    {
+      "text": "{prompt_char} ",
+      "fg": "green",
+      "bold": true
+    }
+  ],
+  "suffix": ""
+}
