@@ -25,7 +25,13 @@ You can copy the each folder from  mods/ into your Terminal Warfare save-directo
 
 *  Linux:   ~/.local/share/love/terminal_warfare/mods/
 *  macOS:   ~/Library/Application Support/LOVE/terminal_warfare/mods/
-*  Windows: %APPDATA%/LOVE/terminal_warfare/mods/
+*  Windows: %APPDATA%/terminal_warfare/mods/
+
+If you are still on the demo, the mods should still load fine but the directory is slightly different:
+
+*  Linux:   ~/.local/share/love/terminal_warfare_demo/mods/
+*  macOS:   ~/Library/Application Support/LOVE/terminal_warfare_demo/mods/
+*  Windows: %APPDATA%/terminal_warfare_demo/mods/
 
 ## Support
 
