@@ -35,4 +35,4 @@ If you are still on the demo, the mods should still load fine but the directory 
 
 ## Support
 
-These are unsupported, but you can reach out on the [discord](https://discord.gg/Qw262uFBX) anyways.
+These are unsupported, but you can reach out on the [discord](https://discord.gg/8cUUSzdgaf) anyways.
