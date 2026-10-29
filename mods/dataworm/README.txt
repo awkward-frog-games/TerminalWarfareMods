@@ -27,7 +27,10 @@ Run:
   Restart the game (mods load at startup), then type: dataworm
 
 Controls:
-  Arrow keys — move | P — pause | ESC — quit
+  Arrow keys / WASD / gamepad stick — move (two quick turns are queued)
+  P / gamepad Start — pause (R in the pause menu restarts)
+  R / gamepad A      — retry after a game over
+  ESC                — quit
 
 Sound effects:
   Place any of these files in this folder (.mp3, .wav, or .ogg).

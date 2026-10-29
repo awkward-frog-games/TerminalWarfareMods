@@ -24,6 +24,16 @@ Folder layout:
 Run:
   Restart the game (mods load at startup), then type: interceptcmd
 
+Controls:
+  Mouse / Arrows / WASD / stick — move the crosshair
+  Click / Space / pad A         — fire from the nearest silo with ammo
+  1 / 2 / 3 (pad LB / Y / RB)   — fire from the left / centre / right silo
+  P / gamepad Start — pause (R in the pause menu restarts)
+  R / gamepad A      — retry after a game over
+  ESC                — quit
+
+Surviving nodes and unspent counter-missiles score a bonus at the end of each wave.
+
 Sound effects:
   Place any of these files in this folder (.mp3, .wav, or .ogg).
   Missing files are silent. Edit sounds.lua to use custom filenames.

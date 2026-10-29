@@ -99,9 +99,17 @@ A minigame module is a Lua file that **returns a table**.
 | `description` | string | Short description |
 | `requires_unlock` | boolean | Ignored for user mods; honored for core modules |
 | `score_unit` | string | Label for high-score display (default: `"score"`) |
+| `score_target` | number | Target score for the game (all bundled mods set one) |
+| `gamepad` | table | Gamepad-to-key mapping — see [Gamepad Input](#gamepad-input) |
 | `sfx_events` | table | Sound event catalog — see [MINIGAME_SFX.md](MINIGAME_SFX.md) |
+
+#### Module fields (optional, top level)
+
+| Field | Type | Description |
+|-------|------|-------------|
 | `help_key` | string | Localization key for help text |
 | `help_text` | string | Plain help text fallback |
+| `_test` | table | Pure helper functions exported for the upstream test suite (`test/test_user_mods.lua`); ignored at runtime |
 
 #### Required functions
 
@@ -118,10 +126,23 @@ A minigame module is a Lua file that **returns a table**.
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
+| `restart` | `function(terminal, state)` | Called when the player presses R after a game over or from the pause menu. Implement it when a retry should differ from a fresh `start()` (e.g. Chopper Commando retries the current mission instead of the whole campaign) |
 | `mousepressed` | `function(terminal, state, x, y, button) → boolean` | Mouse button down |
 | `mousemoved` | `function(terminal, state, x, y, dx, dy)` | Mouse movement |
 | `mousereleased` | `function(terminal, state, x, y, button) → boolean` | Mouse button up |
 | `process_command` | `function(terminal, state, args)` | Text command handling (not yet wired to shell input) |
+
+Mouse coordinates are in the same virtual space you draw in. For hit testing, save the `panel` returned by `MinigameUI.begin_panel` on `state` during `draw()` and measure against it, rather than recomputing the layout from `terminal.virtual_width` / `terminal.virtual_height` (see `cell_at` in [`mods/pipedream/pipedream.lua`](mods/pipedream/pipedream.lua)).
+
+#### State fields the host reads
+
+| Field | Meaning |
+|-------|---------|
+| `state.active` | The game is running. Set to `false` on ESC to return to the terminal |
+| `state.game_over` | The session has ended. While it is `true`, the host offers R / gamepad A to retry |
+| `state.won` | Pass `state.won and "win" or "lose"` to `MinigameUI.draw_end_overlay` |
+
+Only set `game_over` when a retry makes sense. Chopper Commando, for example, leaves it unset on a mission-complete debrief so the host does not offer a retry there.
 
 #### Minimal example
 
@@ -136,27 +157,41 @@ return {
     },
 
     init_state = function(terminal)
-        return { active = false, score = 0 }
+        return { active = false, game_over = false, won = false, score = 0 }
     end,
 
     start = function(terminal, state)
         state.active = true
+        state.game_over = false
+        state.won = false
         state.score = 0
         MinigameUI.init_common_state(state)
+        MinigameSfx.attach(terminal, state, state.metadata.command, state.metadata.sfx_events)
         terminal:add_output("My Minigame starting...")
     end,
 
     update = function(terminal, state, dt)
-        if not state or not state.active then return end
+        if not state then return end
         MinigameUI.tick_frame(state, dt)
+        if not state.active or state.game_over then return end
+        -- game logic; set state.game_over (and state.won) when the session ends
     end,
 
     draw = function(terminal, state, fonts, vw, vh)
         if not state.active then return end
-        local panel, pal = MinigameUI.begin_panel(terminal, fonts, vw, vh, 850, 650)
+        local panel, pal, time = MinigameUI.begin_panel(terminal, fonts, vw, vh, 850, 650)
+        state.panel = panel -- for mouse hit testing
         MinigameUI.draw_hud("MY GAME", {
             { text = "SCORE: " .. state.score, align = "right" },
-        }, "ESC: Quit", fonts, pal, panel)
+        }, "Arrows/WASD: Move | P: Pause | ESC: Quit", fonts, pal, panel)
+        MinigameUI.draw_banner(state.banner_text, fonts, pal, panel, time, state.banner_timer or 0)
+        if state.game_over then
+            MinigameUI.draw_end_overlay(state.won and "win" or "lose", fonts, pal, panel, vw, vh, {
+                time = time,
+                lines = { "Score: " .. state.score },
+                terminal = terminal,
+            })
+        end
     end,
 
     keypressed = function(terminal, state, key)
@@ -172,8 +207,50 @@ return {
     get_score = function(state)
         return state.score or 0
     end,
+
+    help_text = "My Minigame (Arrows/WASD move, P pause, ESC quit)",
 }
 ```
+
+The module does not handle P, R, or high scores itself. The host does that, as described in the next section.
+
+### Host-Managed Controls
+
+The terminal host now runs the parts every minigame used to implement itself. **Don't reimplement them in your mod.** If you do, the player gets a double pause or a double retry.
+
+| Concern | Host behavior | What the mod does |
+|---------|---------------|-------------------|
+| **Pause** | P / gamepad Start opens the pause menu, which has R to restart. `update()` is not called while paused | Nothing. Do not keep a `state.paused` flag or handle `"p"` in `keypressed` |
+| **Retry** | R / gamepad A while `state.game_over` is `true` restarts the game, through `restart()` if the module defines one | Set `state.game_over` (and `state.won`). Implement `restart()` if needed |
+| **High scores** | Reads `get_score()` and records the best score after `update()` returns | Do not write `terminal.hiscores`. Read it if you want to detect a new best: during `update()` it still holds the previous best |
+| **ESC** | Delivered to `keypressed` as normal | Set `state.active = false` and print a final line with `terminal:add_output` |
+
+Mention P, R, and ESC in your HUD footer and `help_text` so players can find them.
+
+### Gamepad Input
+
+Gamepads are mapped onto keyboard keys, so a mod still receives everything through `keypressed` and doesn't need gamepad callbacks. Declare the mapping in metadata:
+
+```lua
+metadata = {
+    -- ...
+    gamepad = {
+        stick = "arrows",  -- left stick and d-pad are delivered as up/down/left/right
+        buttons = {        -- LÖVE GamepadButton name → key passed to keypressed
+            a = "space",
+            x = "b",
+            y = "m",
+            leftshoulder = "g",
+            rightshoulder = "n",
+        },
+    },
+},
+```
+
+- **Reserved buttons:** Start is pause. A also retries after a game over, so map it to your primary action (usually `"space"`).
+- **Key remapping:** keys reach `keypressed` after the host applies the player's key remapping.
+- **WASD:** accept `w`/`a`/`s`/`d` alongside the arrow keys. All bundled mods do.
+- **Held input:** use `MinigameUI.is_down(...)` (true if any of the listed keys is held). It also covers the mapped stick, so `MinigameUI.is_down("left", "a")` handles arrows, WASD, and gamepad together.
 
 ### Sandbox Globals (Injected Helpers)
 
@@ -197,7 +274,30 @@ MinigameUI.init_common_state(state)
 MinigameSfx.attach(terminal, state, state.metadata.command, state.metadata.sfx_events)
 ```
 
-See [`src/minigames/_template.lua`](../src/minigames/_template.lua) for a complete usage example.
+#### Common helper calls
+
+These signatures come from the bundled mods:
+
+| Call | Purpose |
+|------|---------|
+| `MinigameUI.init_common_state(state)` | Reset shared banner, particle, floater, and shake state. Call it in `start()` and `restart()` |
+| `MinigameUI.tick_frame(state, dt)` | Advance the shared effects. Call it every `update()`, even after a game over, so the overlays keep animating |
+| `MinigameUI.begin_panel(terminal, fonts, vw, vh, w, h) → panel, pal, time` | Draw the backdrop and a centered panel; returns its rect, the palette, and the animation time |
+| `MinigameUI.draw_hud(title, items, footer, fonts, pal, panel)` | Title bar and footer. Each item is `{ text, align = "right", color }` |
+| `MinigameUI.color(pal, name)` | Palette color, e.g. `"terminal_green"`, `"cyan"`, `"yellow"`, `"amber"`, `"red"` |
+| `MinigameUI.show_banner(state, text, seconds)` | Queue a center banner (e.g. `"WAVE 3"`) |
+| `MinigameUI.draw_banner(state.banner_text, fonts, pal, panel, time, state.banner_timer or 0)` | Draw the active banner |
+| `MinigameUI.spawn_floater(state, x, y, text [, color])` | Floating score text, in panel-relative coordinates |
+| `MinigameUI.draw_floaters(state, fonts, panel.x, panel.y)` | Draw floaters offset to the panel |
+| `MinigameUI.spawn_particles(state, x, y, { count, colors })` | Particle burst |
+| `MinigameUI.trigger_shake(state, magnitude, seconds)` / `MinigameUI.get_shake_offset(state) → sx, sy` | Screen shake. Add the offset to your draw origin |
+| `MinigameUI.pulse_alpha(time, speed, min, max)` | Oscillating alpha for blinking elements |
+| `MinigameUI.draw_end_overlay("win" \| "lose", fonts, pal, panel, vw, vh, opts)` | Game-over overlay. `opts`: `time`, `lines`, `terminal`, and optionally `title` and `subtitle` |
+| `MinigameUI.is_down(key, ...)` | True if any listed key (or a mapped gamepad input) is held |
+| `MinigameUI.t(terminal, key, params, fallback)` | Localized string, with `fallback` when the key is missing. Shared keys include `minigames.common.score_fmt`, `hud_score_fmt`, `wave_fmt`, `hud_stage_of_fmt` |
+| `MinigameSfx.play(terminal, state, event_id [, { overlap = true }])` | Play a declared sound event. `overlap` lets rapid repeats stack |
+
+See `src/minigames/_template.lua` in the game source for a complete usage example, or any of the [reference mods](#reference-mods) in this repo.
 
 ### Asset Loading
 
@@ -415,6 +515,10 @@ Run `mods` in the terminal. The mod should appear as `INVALID` with a security c
 | Mod loads but crashes on play | Runtime error in `start`/`update`/`draw`; check console output |
 | Assets not loading | Wrong filename; use `terminal:load_module_*` APIs; place files beside `.lua` |
 | Sounds silent | Missing audio file; check `sfx_events` and `sounds.lua` mapping |
+| P toggles pause twice / R retries twice | Mod still handles `"p"` or `"r"` itself; remove it and let the host do it (see [Host-Managed Controls](#host-managed-controls)) |
+| R does nothing after the game ends | `state.game_over` was never set to `true` |
+| Gamepad does nothing | Missing `metadata.gamepad` mapping |
+| Clicks land on the wrong cell | Hit test doesn't match the drawn layout; store the `panel` from `begin_panel` and measure against it |
 
 ---
 
@@ -426,18 +530,18 @@ The repo includes sample mods for local testing.
 
 | Mod | Command | Path |
 |-----|---------|------|
-| Intercept Command | `interceptcmd` | [`mods/interceptcmd/`](../mods/interceptcmd/) |
-| Terrain Barrage | `terrainbarrage` | [`mods/terrainbarrage/`](../mods/terrainbarrage/) |
-| Chopper Commando | `choppercmd` | [`mods/choppercmd/`](../mods/choppercmd/) |
-| Data Worm | `dataworm` | [`mods/dataworm/`](../mods/dataworm/) |
-| Pipe Dream | `pipedream` | [`mods/pipedream/`](../mods/pipedream/) |
+| Intercept Command | `interceptcmd` | [`mods/interceptcmd/`](mods/interceptcmd/) |
+| Terrain Barrage | `terrainbarrage` | [`mods/terrainbarrage/`](mods/terrainbarrage/) |
+| Chopper Commando | `choppercmd` | [`mods/choppercmd/`](mods/choppercmd/) |
+| Data Worm | `dataworm` | [`mods/dataworm/`](mods/dataworm/) |
+| Pipe Dream | `pipedream` | [`mods/pipedream/`](mods/pipedream/) |
 
 ### Content mods
 
 | Mod | Type | Path |
 |-----|------|------|
-| Pokemon Colorscripts | colorscript | [`mods/pokemon-colorscripts/`](../mods/pokemon-colorscripts/) |
-| Oh My Zsh Prompts | prompt_theme | [`mods/ohmyzsh-prompts/`](../mods/ohmyzsh-prompts/) |
+| Pokemon Colorscripts | colorscript | [`mods/pokemon-colorscripts/`](mods/pokemon-colorscripts/) |
+| Oh My Zsh Prompts | prompt_theme | [`mods/ohmyzsh-prompts/`](mods/ohmyzsh-prompts/) |
 
 ---
 
@@ -448,6 +552,10 @@ Before sharing a minigame mod:
 - [ ] Folder name matches `<name>.lua` inside it
 - [ ] `metadata.command`, `name`, and `version` are set
 - [ ] All six required callbacks are implemented
+- [ ] Pause, retry, and high scores are left to the host (no `"p"`/`"r"` handling, no writes to `terminal.hiscores`)
+- [ ] `state.game_over` / `state.won` are set when a session ends
+- [ ] `metadata.gamepad` maps your controls, with A on the primary action
+- [ ] WASD works alongside the arrow keys
 - [ ] No banned functions appear in source (run `mods` to verify `LOADED`)
 - [ ] Assets use `terminal:load_module_*` or `MinigameSprites` / `MinigameSfx`
 - [ ] Include a `README.txt` with install instructions and controls

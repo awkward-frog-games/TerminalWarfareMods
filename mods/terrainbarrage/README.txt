@@ -24,6 +24,18 @@ Folder layout:
 Run:
   Restart the game (mods load at startup), then type: terrainbarrage
 
+Controls:
+  Left / Right (A / D, stick) — raise / lower the barrel (hold to sweep)
+  Up / Down (W / S, stick)    — more / less power (hold to sweep)
+  Space / Enter / pad A       — fire
+  P / gamepad Start — pause (R in the pause menu restarts)
+  R / gamepad A      — retry after a game over
+  ESC                — quit
+
+The dotted guide shows only the start of the arc; read the wind and your last
+three impact markers. Shells can hit a tank directly, and a blast too close to
+your own tank damages you as well.
+
 Sound effects:
   Place any of these files in this folder (.mp3, .wav, or .ogg).
   Missing files are silent. Edit sounds.lua to use custom filenames.

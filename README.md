@@ -32,7 +32,3 @@ If you are still on the demo, the mods should still load fine but the directory 
 *  Linux:   ~/.local/share/love/terminal_warfare_demo/mods/
 *  macOS:   ~/Library/Application Support/LOVE/terminal_warfare_demo/mods/
 *  Windows: %APPDATA%/terminal_warfare_demo/mods/
-
-## Support
-
-These are unsupported, but you can reach out on the [discord](https://discord.gg/8cUUSzdgaf) anyways.

@@ -9,10 +9,18 @@ local SKY_Y = 20
 local AMMO_PER_SILO = 10
 local INTERCEPT_RADIUS = 35
 local NUKE_RADIUS = 50
+local COUNTER_SPEED = 380
+local AIM_SPEED = 420
+local AIM_MIN_Y = 40
+local AIM_MAX_Y = GAME_H - 50
+-- End-of-wave bonus per surviving node and per unspent counter-missile
+local NODE_BONUS = 25
+local AMMO_BONUS = 2
 
 local function init_nodes()
     local nodes = {}
-    local xs = { 90, 200, 310, 540, 650, 760 }
+    -- Three nodes between each pair of silos, clear of the silo blast radius
+    local xs = { 150, 240, 330, 520, 610, 700 }
     for _, x in ipairs(xs) do
         table.insert(nodes, { x = x, y = GROUND_Y, alive = true })
     end
@@ -21,9 +29,9 @@ end
 
 local function init_silos()
     return {
-        { x = 200, y = GAME_H - 10, ammo = AMMO_PER_SILO, alive = true },
+        { x = 60, y = GAME_H - 10, ammo = AMMO_PER_SILO, alive = true },
         { x = 425, y = GAME_H - 10, ammo = AMMO_PER_SILO, alive = true },
-        { x = 650, y = GAME_H - 10, ammo = AMMO_PER_SILO, alive = true },
+        { x = 790, y = GAME_H - 10, ammo = AMMO_PER_SILO, alive = true },
     }
 end
 
@@ -69,7 +77,6 @@ local function spawn_incoming(state)
 end
 
 local function plan_wave_spawns(state)
-    state.spawn_queue = state.spawn_queue or {}
     local count = math.min(6 + state.wave * 2 + math.floor(state.wave / 2), 22)
     state.spawns_remaining = count
     state.spawn_timer = 0.4
@@ -90,14 +97,31 @@ local function spawn_explosion(state, x, y, max_radius, is_intercept)
     })
 end
 
-local function fire_counter(terminal, state, target_x, target_y)
-    local silo = state.silos[state.selected_silo]
-    if not silo or not silo.alive or (silo.ammo or 0) <= 0 then return end
+--- Index of the closest silo to x that can still fire, or nil.
+local function nearest_ready_silo(silos, x)
+    local best, best_dist
+    for i, silo in ipairs(silos) do
+        if silo.alive and (silo.ammo or 0) > 0 then
+            local d = math.abs(silo.x - x)
+            if not best_dist or d < best_dist then
+                best, best_dist = i, d
+            end
+        end
+    end
+    return best
+end
+
+--- Launch a counter-missile from silo `index` (nil = nearest silo with ammo) at the target.
+--- @return boolean true when a missile launched
+local function fire_counter(terminal, state, index, target_x, target_y)
+    index = index or nearest_ready_silo(state.silos, target_x)
+    local silo = index and state.silos[index]
+    if not silo or not silo.alive or (silo.ammo or 0) <= 0 then return false end
     local dx = target_x - silo.x
     local dy = target_y - silo.y
     local dist = math.sqrt(dx * dx + dy * dy)
-    if dist < 8 then return end
-    local speed = 380
+    if dist < 8 then return false end
+    state.selected_silo = index
     table.insert(state.counters, {
         x = silo.x,
         y = silo.y,
@@ -105,11 +129,40 @@ local function fire_counter(terminal, state, target_x, target_y)
         oy = silo.y,
         tx = target_x,
         ty = target_y,
-        vx = dx / dist * speed,
-        vy = dy / dist * speed,
+        vx = dx / dist * COUNTER_SPEED,
+        vy = dy / dist * COUNTER_SPEED,
     })
     silo.ammo = silo.ammo - 1
     MinigameSfx.play(terminal, state, "launch")
+    return true
+end
+
+--- Advance a counter-missile. Returns true when it reached its target this frame; checking
+--- the remaining distance against the step keeps fast frames from flying past the target.
+local function step_counter(c, dt)
+    local dx, dy = c.tx - c.x, c.ty - c.y
+    local remaining = math.sqrt(dx * dx + dy * dy)
+    if remaining <= COUNTER_SPEED * dt then
+        c.x, c.y = c.tx, c.ty
+        return true
+    end
+    c.x = c.x + c.vx * dt
+    c.y = c.y + c.vy * dt
+    return false
+end
+
+--- Advance an incoming missile toward its ground target. Returns true on impact.
+local function step_incoming(m, dt)
+    local dx, dy = m.tx - m.x, m.ty - m.y
+    local dist = math.sqrt(dx * dx + dy * dy)
+    local step = m.speed * dt
+    if dist <= step then
+        m.x, m.y = m.tx, m.ty
+        return true
+    end
+    m.x = m.x + dx / dist * step
+    m.y = m.y + dy / dist * step
+    return false
 end
 
 local function destroy_missile_in_radius(terminal, state, x, y, radius)
@@ -126,7 +179,7 @@ local function destroy_missile_in_radius(terminal, state, x, y, radius)
     end
 end
 
-local function damage_nearby(state, x, y, radius, is_friendly)
+local function damage_nearby(terminal, state, x, y, radius, is_friendly)
     for _, node in ipairs(state.nodes) do
         if node.alive then
             local dx = node.x - x
@@ -155,11 +208,14 @@ return {
     metadata = {
         command = "interceptcmd",
         name = "Intercept Command",
-        version = "2.0.0",
+        version = "2.1.0",
         author = "Terminal Warfare Community",
         description = "Defend terminal nodes from incoming attack packets",
         score_unit = "score",
         requires_unlock = false,
+        score_target = 2500,
+        -- Stick steers the crosshair; A fires from the nearest silo, LB/Y/RB pick a silo
+        gamepad = { stick = "arrows", buttons = { a = "space", leftshoulder = "1", y = "2", rightshoulder = "3" } },
         sfx_events = {
             { id = "launch", description = "Counter-missile launched" },
             { id = "explode", description = "Intercept explosion" },
@@ -205,6 +261,8 @@ return {
         state.incoming = {}
         state.counters = {}
         state.explosions = {}
+        state.aim_x = PANEL_W / 2
+        state.aim_y = 260
         state.wave_delay = 0.8
         plan_wave_spawns(state)
         MinigameUI.init_common_state(state)
@@ -217,6 +275,14 @@ return {
         if not state then return end
         MinigameUI.tick_frame(state, dt)
         if not state.active or state.game_over then return end
+
+        -- Crosshair: held arrows/WASD or the gamepad stick
+        local ax = (MinigameUI.is_down("right", "d") and 1 or 0) - (MinigameUI.is_down("left", "a") and 1 or 0)
+        local ay = (MinigameUI.is_down("down", "s") and 1 or 0) - (MinigameUI.is_down("up", "w") and 1 or 0)
+        if ax ~= 0 or ay ~= 0 then
+            state.aim_x = math.max(10, math.min(PANEL_W - 10, state.aim_x + ax * AIM_SPEED * dt))
+            state.aim_y = math.max(AIM_MIN_Y, math.min(AIM_MAX_Y, state.aim_y + ay * AIM_SPEED * dt))
+        end
 
         if state.wave_delay > 0 then
             state.wave_delay = state.wave_delay - dt
@@ -234,11 +300,7 @@ return {
 
         for i = #state.counters, 1, -1 do
             local c = state.counters[i]
-            c.x = c.x + c.vx * dt
-            c.y = c.y + c.vy * dt
-            if c.y < 0 or c.x < 0 or c.x > PANEL_W then
-                table.remove(state.counters, i)
-            elseif math.sqrt((c.x - c.tx) ^ 2 + (c.y - c.ty) ^ 2) < 14 then
+            if step_counter(c, dt) then
                 spawn_explosion(state, c.tx, c.ty, INTERCEPT_RADIUS, true)
                 table.remove(state.counters, i)
             end
@@ -256,7 +318,7 @@ return {
                 ex.hold_timer = ex.hold_timer - dt
                 destroy_missile_in_radius(terminal, state, ex.x, ex.y, ex.radius)
                 if not ex.is_intercept then
-                    damage_nearby(state, ex.x, ex.y, ex.radius, false)
+                    damage_nearby(terminal, state, ex.x, ex.y, ex.radius, false)
                 end
                 if ex.hold_timer <= 0 then
                     ex.phase = "fade"
@@ -271,15 +333,10 @@ return {
 
         for i = #state.incoming, 1, -1 do
             local m = state.incoming[i]
-            local dx = m.tx - m.x
-            local dy = m.ty - m.y
-            local dist = math.sqrt(dx * dx + dy * dy)
-            if dist < 6 then
+            if step_incoming(m, dt) then
                 spawn_explosion(state, m.tx, m.ty, NUKE_RADIUS, false)
                 table.remove(state.incoming, i)
             else
-                m.x = m.x + dx / dist * m.speed * dt
-                m.y = m.y + dy / dist * m.speed * dt
                 if state.wave >= 6 and not m.split and m.y > GAME_H * 0.45 then
                     m.split = true
                     for _ = 1, 2 do
@@ -307,13 +364,17 @@ return {
                 state.score = state.score + 200 + total_ammo(state.silos) * 5
                 MinigameSfx.play(terminal, state, "win")
             else
+                local nodes_left = alive_node_count(state.nodes)
+                local bonus = nodes_left * NODE_BONUS + total_ammo(state.silos) * AMMO_BONUS
+                state.score = state.score + bonus
+                MinigameUI.spawn_floater(state, PANEL_W / 2 - 30, GAME_H - 90, "+" .. bonus)
                 state.wave = state.wave + 1
                 state.wave_delay = 1.2
                 for _, silo in ipairs(state.silos) do
                     if silo.alive then silo.ammo = AMMO_PER_SILO end
                 end
                 plan_wave_spawns(state)
-                MinigameUI.show_banner(state, "WAVE " .. state.wave, 1.2)
+                MinigameUI.show_banner(state, MinigameUI.t(terminal, "minigames.common.wave_fmt", { wave = state.wave }, "WAVE " .. state.wave), 1.2)
                 MinigameSfx.play(terminal, state, "wave_start")
             end
         end
@@ -332,11 +393,11 @@ return {
         local nodes_alive = alive_node_count(state.nodes)
 
         MinigameUI.draw_hud("INTERCEPT COMMAND", {
-            { text = "SCORE: " .. state.score, align = "right" },
-            { text = "WAVE: " .. state.wave .. "/" .. MAX_WAVE, align = "right", color = cyan },
+            { text = MinigameUI.t(terminal, "minigames.common.hud_score_fmt", { score = state.score }, "SCORE: " .. state.score), align = "right" },
+            { text = MinigameUI.t(terminal, "minigames.common.hud_wave_of_fmt", { wave = state.wave, max = MAX_WAVE }, "WAVE: " .. state.wave .. "/" .. MAX_WAVE), align = "right", color = cyan },
             { text = "AMMO: " .. total_ammo(state.silos), align = "right", color = yellow },
             { text = "NODES: " .. nodes_alive, align = "right", color = tg },
-        }, "1/2/3: Silo | Click/Space: Fire | ESC: Quit", fonts, pal, panel)
+        }, "Mouse/Arrows: Aim | Click/Space: Fire | 1/2/3: Fire from silo | ESC: Quit", fonts, pal, panel)
 
         local sx, sy = MinigameUI.get_shake_offset(state)
         love.graphics.push()
@@ -400,13 +461,17 @@ return {
 
         love.graphics.pop()
         MinigameUI.draw_particles(state, panel.x, panel.y)
+        MinigameUI.draw_floaters(state, fonts, panel.x, panel.y)
         MinigameUI.draw_banner(state.banner_text, fonts, pal, panel, time, state.banner_timer or 0)
 
         if state.game_over then
             MinigameUI.draw_end_overlay(state.won and "win" or "lose", fonts, pal, panel, vw, vh, {
                 time = time,
                 title = state.won and "NODES SECURED" or "NODES LOST",
-                lines = { "Wave: " .. state.wave, "Score: " .. state.score },
+                lines = {
+                    MinigameUI.t(terminal, "minigames.common.wave_line_fmt", { wave = state.wave }, "Wave: " .. state.wave),
+                    MinigameUI.t(terminal, "minigames.common.score_fmt", { score = state.score }, "Score: " .. state.score),
+                },
                 terminal = terminal,
             })
         end
@@ -420,11 +485,13 @@ return {
             return true
         end
         if state.game_over then return false end
-        if key == "1" then state.selected_silo = 1 return true end
-        if key == "2" then state.selected_silo = 2 return true end
-        if key == "3" then state.selected_silo = 3 return true end
-        if key == "space" then
-            fire_counter(terminal, state, state.aim_x, state.aim_y)
+        local silo = tonumber(key)
+        if silo and silo >= 1 and silo <= #state.silos then
+            fire_counter(terminal, state, silo, state.aim_x, state.aim_y)
+            return true
+        end
+        if key == "space" or key == "return" then
+            fire_counter(terminal, state, nil, state.aim_x, state.aim_y)
             return true
         end
         return false
@@ -437,8 +504,8 @@ return {
         local py = y - state.panel.y
         if px < 0 or py < 0 or px > PANEL_W or py > GAME_H then return false end
         state.aim_x = px
-        state.aim_y = py
-        fire_counter(terminal, state, px, py)
+        state.aim_y = math.max(AIM_MIN_Y, py)
+        fire_counter(terminal, state, nil, state.aim_x, state.aim_y)
         return true
     end,
 
@@ -448,7 +515,7 @@ return {
         local py = y - state.panel.y
         if px >= 0 and py >= 0 and px <= PANEL_W and py <= GAME_H then
             state.aim_x = px
-            state.aim_y = math.max(40, py)
+            state.aim_y = math.max(AIM_MIN_Y, py)
         end
         return false
     end,
@@ -457,5 +524,15 @@ return {
         return state.score or 0
     end,
 
-    help_text = "Intercept Command (1/2/3, mouse, Space, ESC)",
+    help_text = "Intercept Command (mouse/arrows aim, Space/1/2/3 fire, ESC)",
+
+    -- Pure helpers for test/test_user_mods.lua
+    _test = {
+        init_silos = init_silos,
+        init_nodes = init_nodes,
+        nearest_ready_silo = nearest_ready_silo,
+        fire_counter = fire_counter,
+        step_counter = step_counter,
+        step_incoming = step_incoming,
+    },
 }

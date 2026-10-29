@@ -1,4 +1,8 @@
 -- Chopper Commando — user minigame mod (based on Mark Currie's Chopper Commando / chopper258)
+--
+-- The terminal host handles P (pause), R and high scores. R after a crash calls restart(),
+-- which retries the current mission; only a failed mission or the finished campaign set
+-- state.game_over, so a mission-complete debrief never offers the host's retry.
 
 local PANEL_W = 850
 local PANEL_H = 650
@@ -13,18 +17,29 @@ local GRAVITY = 165
 local MAX_SPEED = 210
 local ACCEL = 380
 local FALL_RATE = 95
+local MISSILE_MAX_SPEED = 420
+local TANK_HP = 3
+local TANK_PATROL = 120
+-- The enemy helicopter keeps this far from the player and stays out of Ocale Base airspace
+local HELI_STANDOFF = 180
+local HELI_MIN_X = BASE_PAD_W + 300
+-- After a ground strike the chopper bounces clear before terrain can hurt it again, so
+-- scraping along a slope costs one status level, not one per frame
+local GROUND_HIT_GRACE = 0.6
 
 local STATUS_LABELS = { [4] = "PERFECT", [3] = "POOR", [2] = "INJURED", [1] = "CRITICAL", [0] = "TRASHED" }
 
+--- Ground height at x. Terrain points are evenly spaced from x = 0, so the segment is
+--- found by index instead of scanning every point (called for every projectile each frame).
 local function terrain_height_at(terrain, x)
-    for i = 1, #terrain - 1 do
-        local p1, p2 = terrain[i], terrain[i + 1]
-        if x >= p1.x and x <= p2.x then
-            local t = (p2.x == p1.x) and 0 or (x - p1.x) / (p2.x - p1.x)
-            return p1.y + (p2.y - p1.y) * t
-        end
-    end
-    return GAME_TOP + GAME_H - 40
+    local n = #terrain
+    if n < 2 then return GAME_TOP + GAME_H - 40 end
+    local step = terrain[2].x - terrain[1].x
+    local pos = (x - terrain[1].x) / step
+    if pos < 0 or pos > n - 1 then return GAME_TOP + GAME_H - 40 end
+    local i = math.min(n - 1, math.floor(pos) + 1)
+    local p1, p2 = terrain[i], terrain[i + 1]
+    return p1.y + (p2.y - p1.y) * (pos - (i - 1))
 end
 
 local function generate_terrain()
@@ -379,12 +394,13 @@ end
 
 local function complete_mission(terminal, state)
     local m = current_mission(state)
-    state.game_over = true
     state.won = true
     state.phase = "debrief"
     state.score = state.score + (m and m.score_bonus or 400)
     MinigameSfx.play(terminal, state, "mission_complete")
     if state.campaign_index >= #MISSIONS then
+        -- Only the end of the campaign is a game over; the host then records the score
+        state.game_over = true
         state.campaign_complete = true
         state.message = "All missions complete — press SPACE to exit"
     else
@@ -501,6 +517,65 @@ local function hit_building(terminal, state, b, power)
     end
 end
 
+local function hit_tank(terminal, state, tank, power)
+    if not tank.alive then return end
+    tank.hp = (tank.hp or TANK_HP) - power
+    if tank.hp <= 0 then
+        tank.alive = false
+        state.score = state.score + 60
+        spawn_explosion(state, tank.x, tank.y - 4, 26, 2)
+        MinigameSfx.play(terminal, state, "enemy_destroyed")
+    end
+end
+
+local function within(x, y, tx, ty, r)
+    local dx, dy = x - tx, y - ty
+    return dx * dx + dy * dy < r * r
+end
+
+--- True when an explosive projectile touches any target (air or ground) this frame.
+local function touches_target(state, x, y)
+    local eh, cr = state.enemy_heli, state.cruise
+    if eh and eh.alive and within(x, y, eh.x, eh.y, 16) then return true end
+    if cr and cr.alive and within(x, y, cr.x, cr.y, 22) then return true end
+    for _, b in ipairs(state.buildings) do
+        if b.alive and within(x, y, b.x, b.y - 20, 22) then return true end
+    end
+    for _, t in ipairs(state.tanks) do
+        if t.alive and within(x, y, t.x, t.y - 4, 14) then return true end
+    end
+    return false
+end
+
+--- Detonate a bomb, missile or nuke: every target in the blast radius takes its power,
+--- including the player's own chopper.
+local function apply_blast(terminal, state, x, y, power)
+    local radius = 12 + power * 2
+    spawn_explosion(state, x, y, radius, power)
+    MinigameSfx.play(terminal, state, "explosion", { overlap = true })
+    local eh, cr = state.enemy_heli, state.cruise
+    if eh and eh.alive and within(x, y, eh.x, eh.y, radius + 12) then
+        hit_enemy_heli(terminal, state, power)
+    end
+    if cr and cr.alive and within(x, y, cr.x, cr.y, radius + 14) then
+        hit_cruise(terminal, state, power)
+    end
+    for _, b in ipairs(state.buildings) do
+        if b.alive and within(x, y, b.x, b.y - 20, radius + 16) then
+            hit_building(terminal, state, b, power)
+        end
+    end
+    for _, t in ipairs(state.tanks) do
+        if t.alive and within(x, y, t.x, t.y - 4, radius + 10) then
+            hit_tank(terminal, state, t, power)
+        end
+    end
+    local c = state.chopper
+    if not state.game_over and within(x, y, c.x, c.y, radius) then
+        damage_status(terminal, state, power >= 10 and 2 or 1)
+    end
+end
+
 local function reset_chopper_for_mission(state)
     state.chopper = { x = BASE_X, y = chopper_ground_y(state) - 60, vx = 0, vy = 0 }
     state.camera_x = 0
@@ -514,6 +589,7 @@ local function reset_chopper_for_mission(state)
     state.explosions = {}
     state.enemy_shoot_timer = 2
     state.mission_step = 0
+    state.ground_hit_timer = 0
 end
 
 local function begin_mission(state, index)
@@ -522,8 +598,19 @@ local function begin_mission(state, index)
     state.game_over = false
     state.won = false
     state.campaign_complete = false
+    state.mission_start_score = state.score
     reset_chopper_for_mission(state)
     MISSIONS[index].setup(state)
+    for _, tank in ipairs(state.tanks) do
+        tank.hp = tank.hp or TANK_HP
+        tank.home_x = tank.x
+    end
+end
+
+--- Fly the current mission again from the score it started with.
+local function retry_mission(state)
+    state.score = state.mission_start_score or state.score
+    begin_mission(state, state.campaign_index)
 end
 
 local function show_briefing(state, index)
@@ -533,47 +620,34 @@ local function show_briefing(state, index)
     state.won = false
 end
 
-local function resolve_projectile_hit(terminal, state, p, x, y)
+--- Bullet hit test. Returns true when the bullet struck something and should be removed.
+local function resolve_bullet_hit(terminal, state, p, x, y)
     if p.owner == "player" then
         local eh = state.enemy_heli
-        if eh and eh.alive then
-            local dx, dy = x - eh.x, y - eh.y
-            if dx * dx + dy * dy < 24 * 24 then
-                hit_enemy_heli(terminal, state, p.power or 1)
-                return true
-            end
+        if eh and eh.alive and within(x, y, eh.x, eh.y, 24) then
+            hit_enemy_heli(terminal, state, 1)
+            return true
         end
         local cr = state.cruise
-        if cr and cr.alive then
-            local dx, dy = x - cr.x, y - cr.y
-            if dx * dx + dy * dy < 28 * 28 then
-                hit_cruise(terminal, state, p.power or 1)
+        if cr and cr.alive and within(x, y, cr.x, cr.y, 28) then
+            hit_cruise(terminal, state, 1)
+            return true
+        end
+        for _, b in ipairs(state.buildings) do
+            if b.alive and within(x, y, b.x, b.y - 20, 30) then
+                hit_building(terminal, state, b, 1)
                 return true
             end
         end
-        for _, b in ipairs(state.buildings) do
-            if b.alive then
-                local dx, dy = x - b.x, y - (b.y - 20)
-                if dx * dx + dy * dy < 30 * 30 then
-                    hit_building(terminal, state, b, p.power or 1)
-                    return true
-                end
+        for _, t in ipairs(state.tanks) do
+            if t.alive and within(x, y, t.x, t.y - 4, 14) then
+                hit_tank(terminal, state, t, 1)
+                return true
             end
-        end
-        if p.kind ~= "bullet" then
-            spawn_explosion(state, x, y, 12 + (p.power or 5) * 2, p.power or 5)
-            MinigameSfx.play(terminal, state, "explosion", { overlap = true })
-            local c = state.chopper
-            local dx, dy = x - c.x, y - c.y
-            if dx * dx + dy * dy < (20 + p.power * 2) ^ 2 then
-                damage_status(terminal, state, p.power >= 10 and 2 or 1)
-            end
-            return true
         end
     elseif p.owner == "enemy" then
         local c = state.chopper
-        local dx, dy = x - c.x, y - c.y
-        if dx * dx + dy * dy < 18 * 18 then
+        if within(x, y, c.x, c.y, 18) then
             damage_status(terminal, state, 1)
             return true
         end
@@ -616,11 +690,16 @@ return {
     metadata = {
         command = "choppercmd",
         name = "Chopper Commando",
-        version = "1.2.0",
+        version = "1.3.0",
         author = "Terminal Warfare Community",
         description = "Chopper Commando campaign — missions 1A, 2A, 4A, and 5A from Ocale Base",
         score_unit = "score",
         requires_unlock = false,
+        score_target = 3000,
+        gamepad = {
+            stick = "arrows",
+            buttons = { a = "space", x = "b", y = "m", rightshoulder = "n", leftshoulder = "g" },
+        },
         sfx_events = {
             { id = "shoot", description = "Machine gun fired" },
             { id = "bomb_drop", description = "Bomb released" },
@@ -665,6 +744,7 @@ return {
             explosions = {},
             panel = nil,
             enemy_shoot_timer = 2,
+            mission_start_score = 0,
         }
     end,
 
@@ -690,10 +770,17 @@ return {
         if state.phase == "debrief" or state.game_over then return end
 
         local c = state.chopper
-        local up = love.keyboard.isDown("up") or love.keyboard.isDown("w")
-        local down = love.keyboard.isDown("down") or love.keyboard.isDown("s")
-        local left = love.keyboard.isDown("left") or love.keyboard.isDown("a")
-        local right = love.keyboard.isDown("right") or love.keyboard.isDown("d")
+        state.ground_hit_timer = math.max(0, (state.ground_hit_timer or 0) - dt)
+        local up = MinigameUI.is_down("up", "w")
+        local down = MinigameUI.is_down("down", "s")
+        local left = MinigameUI.is_down("left", "a")
+        local right = MinigameUI.is_down("right", "d")
+
+        -- Holding Up while landed lifts off
+        if state.landed == 2 and up then
+            state.landed = 1
+            c.vy = -120
+        end
 
         if state.landed < 2 then
             if up then c.vy = c.vy - ACCEL * dt end
@@ -737,7 +824,11 @@ return {
                 end
             else
                 c.y = ground
-                damage_status(terminal, state, math.ceil(math.abs(c.vy) / 60))
+                -- Any gear-up or hard touchdown costs at least one status level
+                if state.ground_hit_timer <= 0 then
+                    state.ground_hit_timer = GROUND_HIT_GRACE
+                    damage_status(terminal, state, math.max(1, math.ceil(math.abs(c.vy) / 60)))
+                end
                 c.vy = -c.vy * 0.3
                 if c.vy > -20 then c.vy = -60 end
             end
@@ -755,18 +846,26 @@ return {
         local eh = state.enemy_heli
         if eh and eh.alive then
             if eh.y < c.y - 30 then eh.vy = eh.vy + 40 * dt else eh.vy = eh.vy - 40 * dt end
-            if eh.x > c.x then eh.vx = eh.vx - 30 * dt else eh.vx = eh.vx + 30 * dt end
-            eh.vx = math.max(-90, math.min(-35, eh.vx))
+            -- Hold a standoff on whichever side of the player it is, inside the battlefield
+            local side = eh.x >= c.x and 1 or -1
+            local goal_x = math.max(HELI_MIN_X, math.min(WORLD_W - 60, c.x + side * HELI_STANDOFF))
+            local want_vx = math.max(-90, math.min(90, (goal_x - eh.x) * 0.8))
+            if eh.vx < want_vx then
+                eh.vx = math.min(want_vx, eh.vx + 60 * dt)
+            else
+                eh.vx = math.max(want_vx, eh.vx - 60 * dt)
+            end
             eh.vy = math.max(-60, math.min(60, eh.vy))
-            eh.x = eh.x + eh.vx * dt
+            eh.x = math.max(HELI_MIN_X - 40, math.min(WORLD_W - 40, eh.x + eh.vx * dt))
             eh.y = eh.y + eh.vy * dt
-            eh.y = math.max(GAME_TOP + 40, math.min(ground - 30, eh.y))
+            local heli_ground = terrain_height_at(state.terrain, eh.x) - 36
+            eh.y = math.max(GAME_TOP + 40, math.min(heli_ground, eh.y))
 
             state.enemy_shoot_timer = state.enemy_shoot_timer - dt
             if state.enemy_shoot_timer <= 0 then
                 local dx, dy = c.x - eh.x, c.y - eh.y
                 local dist = math.sqrt(dx * dx + dy * dy)
-                if dist < 500 then
+                if dist > 1 and dist < 500 then
                     table.insert(state.projectiles, {
                         kind = "bullet", x = eh.x, y = eh.y,
                         vx = dx / dist * 220, vy = dy / dist * 220,
@@ -795,6 +894,11 @@ return {
         for _, tank in ipairs(state.tanks) do
             if tank.alive then
                 tank.x = tank.x + tank.vx * dt
+                -- Patrol back and forth around the spawn point
+                local home = tank.home_x or tank.x
+                if (tank.x < home - TANK_PATROL and tank.vx < 0) or (tank.x > home + TANK_PATROL and tank.vx > 0) then
+                    tank.vx = -tank.vx
+                end
                 tank.y = terrain_height_at(state.terrain, tank.x) - 6
             end
         end
@@ -816,6 +920,11 @@ return {
                         p.vy = p.vy + dy / dist * 280 * dt
                     end
                 end
+                local speed = math.sqrt(p.vx * p.vx + p.vy * p.vy)
+                if speed > MISSILE_MAX_SPEED then
+                    p.vx = p.vx / speed * MISSILE_MAX_SPEED
+                    p.vy = p.vy / speed * MISSILE_MAX_SPEED
+                end
             end
             if p.kind == "bomb" or p.kind == "nuke" then
                 p.vy = p.vy + GRAVITY * dt
@@ -826,16 +935,20 @@ return {
             local hit_ground = p.y >= terrain_height_at(state.terrain, p.x)
             local oob = p.x < 0 or p.x > WORLD_W or p.y < GAME_TOP or p.y > GAME_TOP + GAME_H + 40
             if p.kind == "bullet" then
-                if resolve_projectile_hit(terminal, state, p, p.x, p.y) or oob or hit_ground then
+                if resolve_bullet_hit(terminal, state, p, p.x, p.y) or oob or hit_ground then
                     table.remove(state.projectiles, i)
                 end
-            elseif hit_ground or oob then
-                local hx = math.max(20, math.min(WORLD_W - 20, p.x))
-                local hy = hit_ground and terrain_height_at(state.terrain, hx) or p.y
-                resolve_projectile_hit(terminal, state, p, hx, hy)
+            elseif hit_ground or oob or touches_target(state, p.x, p.y) then
+                -- Explosives detonate on contact or on the ground; ones that leave the
+                -- battlefield are simply lost
+                if not oob or hit_ground then
+                    local hy = hit_ground and terrain_height_at(state.terrain, p.x) or p.y
+                    apply_blast(terminal, state, p.x, hy, p.power or 5)
+                end
                 state.bomb_count = math.max(0, state.bomb_count - 1)
                 table.remove(state.projectiles, i)
             end
+            if state.game_over then break end
         end
 
         for i = #state.explosions, 1, -1 do
@@ -870,13 +983,19 @@ return {
         if state.phase == "briefing" and m then
             hud_footer = "SPACE: Launch mission | 1-4: Jump to mission | ESC: Quit"
         elseif state.phase == "debrief" then
-            hud_footer = state.campaign_complete and "SPACE: Exit | ESC: Quit" or "SPACE: Next briefing | R: Retry | ESC: Quit"
+            if state.campaign_complete then
+                hud_footer = "SPACE: Exit | R: New campaign | ESC: Quit"
+            elseif state.won then
+                hud_footer = "SPACE: Next briefing | ESC: Quit"
+            else
+                hud_footer = "SPACE/R: Retry mission | ESC: Quit"
+            end
         elseif m then
             hud_title = "MISSION " .. m.id
         end
 
         MinigameUI.draw_hud(hud_title, {
-            { text = "SCORE: " .. state.score, align = "right" },
+            { text = MinigameUI.t(terminal, "minigames.common.hud_score_fmt", { score = state.score }, "SCORE: " .. state.score), align = "right" },
             { text = state.phase == "playing" and ("AMMO: " .. state.ammo) or ("OPS: " .. state.campaign_index .. "/" .. #MISSIONS), align = "right", color = cyan },
             { text = state.phase == "playing" and (STATUS_LABELS[state.status] or "???") or (m and m.title or ""), align = "right", color = tg },
         }, hud_footer, fonts, pal, panel)
@@ -1015,18 +1134,20 @@ return {
         MinigameUI.draw_particles(state, panel.x, panel.y)
         MinigameUI.draw_banner(state.banner_text, fonts, pal, panel, time, state.banner_timer or 0)
 
-        if state.phase == "debrief" or (state.game_over and state.phase ~= "playing") then
+        if state.phase == "debrief" then
             local title = state.won and (state.campaign_complete and "CAMPAIGN WON" or "MISSION COMPLETE") or "MISSION FAILED"
-            local lines = { "Score: " .. state.score }
-            if not state.won then
-                table.insert(lines, "Press R to retry")
-            elseif not state.campaign_complete then
-                table.insert(lines, "Press SPACE for next mission")
+            -- Failure keeps the host's "R: retry" hint (restart() retries the mission)
+            local subtitle = nil
+            if state.campaign_complete then
+                subtitle = "SPACE: Exit · R: New campaign"
+            elseif state.won then
+                subtitle = "SPACE: Next briefing · ESC: Exit"
             end
             MinigameUI.draw_end_overlay(state.won and "win" or "lose", fonts, pal, panel, vw, vh, {
                 time = time,
                 title = title,
-                lines = lines,
+                lines = { MinigameUI.t(terminal, "minigames.common.score_fmt", { score = state.score }, "Score: " .. state.score) },
+                subtitle = subtitle,
                 terminal = terminal,
             })
         end
@@ -1064,8 +1185,8 @@ return {
                 end
                 return true
             end
-            if key == "r" or (key == "space" and not state.won) then
-                begin_mission(state, state.campaign_index)
+            if key == "space" and not state.won then
+                retry_mission(state)
                 return true
             end
             return false
@@ -1086,12 +1207,24 @@ return {
             end
             return true
         end
-        if key == "up" and state.landed == 2 then
-            state.landed = 1
-            state.chopper.vy = -120
-            return true
-        end
         return false
+    end,
+
+    -- Host R (after a crash or from the pause menu): retry this mission, or start a fresh
+    -- campaign once it's complete
+    restart = function(terminal, state)
+        state.active = true
+        MinigameUI.init_common_state(state)
+        if state.campaign_complete then
+            state.score = 0
+            state.mission_start_score = 0
+            state.terrain = generate_terrain()
+            show_briefing(state, 1)
+        elseif state.phase == "briefing" then
+            show_briefing(state, state.campaign_index)
+        else
+            retry_mission(state)
+        end
     end,
 
     get_score = function(state)
@@ -1099,4 +1232,15 @@ return {
     end,
 
     help_text = "Chopper Commando (Campaign 1A-5A, Arrows fly, Space/B/M/N, G gear, ESC quit)",
+
+    -- Pure helpers for test/test_user_mods.lua
+    _test = {
+        WORLD_W = WORLD_W,
+        HELI_MIN_X = HELI_MIN_X,
+        begin_mission = begin_mission,
+        complete_mission = complete_mission,
+        crash_chopper = crash_chopper,
+        apply_blast = apply_blast,
+        terrain_height_at = terrain_height_at,
+    },
 }
